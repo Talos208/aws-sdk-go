@@ -11,13 +11,16 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 //	"github.com/aws/aws-sdk-go/internal/protocol/rest"
+	"time"
+	"net/url"
+	"io"
 )
 
-const (
-	authHeaderPrefix = "AWS4-HMAC-SHA256"
-	timeFormat       = "20060102T150405Z"
-	shortTimeFormat  = "20060102"
-)
+//const (
+//	authHeaderPrefix = "AWS4-HMAC-SHA256"
+//	timeFormat       = "20060102T150405Z"
+//	shortTimeFormat  = "20060102"
+//)
 
 var ignoredHeaders = map[string]bool{
 	"Authorization":  true,
@@ -120,7 +123,7 @@ func (v2 *signer) sign() error {
 
 	if v2.credentialString ==  "" {
 		// no auth secret; skip signing, e.g. for public read-only buckets.
-		return
+		return nil
 	}
 
 	for k, v := range v2.Request.Header {
@@ -151,13 +154,13 @@ func (v2 *signer) sign() error {
 	}
 
 	expires := false
-	if err := v2.Request.ParseForm(); er != nil {
+	if err := v2.Request.ParseForm(); err != nil {
 		return err
 	}
 	if v := v2.Request.Form.Get("Expires"); len(v) > 0 {
 		// Query string request authentication alternative.
 		expires = true
-		date = v[0]
+		date = string(v)
 		v2.Request.Form.Add("AWSAccessKeyId", v2.CredValues.AccessKeyID)
 	}
 
@@ -188,15 +191,15 @@ func (v2 *signer) sign() error {
 	b64.Write(hash.Sum(nil))
 
 	if expires {
-		v2.Request.Form.Set("Signature", signature)
+		v2.Request.Form.Set("Signature", string(signature))
 	} else {
 		v2.Request.Header.Set("Authorization", "AWS " + v2.CredValues.AccessKeyID + ":" + string(signature))
 	}
 
-//	if debug {
-//		log.Printf("Signature payload: %q", payload)
-//		log.Printf("Signature: %q", signature)
-//	}
+	//	if debug {
+	//		log.Printf("Signature payload: %q", payload)
+	//		log.Printf("Signature: %q", signature)
+	//	}
 	return nil
 }
 
