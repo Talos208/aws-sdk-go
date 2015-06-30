@@ -5,8 +5,7 @@ package s3
 import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/internal/protocol/restxml"
-	"github.com/Talos208/aws-sdk-go/internal/signer/v2"
-//	"github.com/aws/aws-sdk-go/internal/signer/v4"
+	"github.com/aws/aws-sdk-go/internal/signer/v4"
 )
 
 // S3 is a client for Amazon S3.
@@ -30,7 +29,7 @@ func New(config *aws.Config) *S3 {
 	service.Initialize()
 
 	// Handlers
-	service.Handlers.Sign.PushBack(v2.Sign)	// v4.Sign)
+	service.Handlers.Sign.PushBack(v4.Sign)
 	service.Handlers.Build.PushBack(restxml.Build)
 	service.Handlers.Unmarshal.PushBack(restxml.Unmarshal)
 	service.Handlers.UnmarshalMeta.PushBack(restxml.UnmarshalMeta)

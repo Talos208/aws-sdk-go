@@ -45,6 +45,7 @@ var DefaultConfig = &Config{
 	DisableParamValidation:  false,
 	DisableComputeChecksums: false,
 	S3ForcePathStyle:        false,
+	SignatureVersion:		 4,
 }
 
 // A Config provides service configuration for service clients. By default,
@@ -117,6 +118,7 @@ type Config struct {
 	// @see http://docs.aws.amazon.com/AmazonS3/latest/dev/VirtualHosting.html
 	//   Amazon S3: Virtual Hosting of Buckets
 	S3ForcePathStyle bool
+	SignatureVersion	uint
 }
 
 // Copy will return a shallow copy of the Config object.
@@ -134,6 +136,7 @@ func (c Config) Copy() Config {
 	dst.DisableParamValidation = c.DisableParamValidation
 	dst.DisableComputeChecksums = c.DisableComputeChecksums
 	dst.S3ForcePathStyle = c.S3ForcePathStyle
+	dst.SignatureVersion = c.SignatureVersion
 
 	return dst
 }
@@ -220,6 +223,12 @@ func (c Config) Merge(newcfg *Config) *Config {
 		cfg.S3ForcePathStyle = newcfg.S3ForcePathStyle
 	} else {
 		cfg.S3ForcePathStyle = c.S3ForcePathStyle
+	}
+
+	if newcfg.SignatureVersion != 0 {
+		cfg.SignatureVersion = newcfg.SignatureVersion
+	} else {
+		cfg.SignatureVersion = c.SignatureVersion
 	}
 
 	return &cfg

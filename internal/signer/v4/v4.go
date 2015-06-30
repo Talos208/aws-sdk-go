@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/internal/protocol/rest"
+	"github.com/aws/aws-sdk-go/internal/signer/v2"
 
 	"github.com/aws/aws-sdk-go/aws"
 )
@@ -81,20 +82,36 @@ func Sign(req *aws.Request) {
 		name = req.Service.ServiceName
 	}
 
-	s := signer{
-		Request:     req.HTTPRequest,
-		Time:        req.Time,
-		ExpireTime:  req.ExpireTime,
-		Query:       req.HTTPRequest.URL.Query(),
-		Body:        req.Body,
-		ServiceName: name,
-		Region:      region,
-		Credentials: req.Service.Config.Credentials,
-		Debug:       req.Service.Config.LogLevel,
-		Logger:      req.Service.Config.Logger,
+	switch req.Service.Config.SignatureVersion {
+	case 2:
+		s := v2.Signer{
+			Request:     req.HTTPRequest,
+			Time:        req.Time,
+			ExpireTime:  req.ExpireTime,
+			Query:       req.HTTPRequest.URL.Query(),
+			Body:        req.Body,
+			ServiceName: name,
+			Region:      region,
+			Credentials: req.Service.Config.Credentials,
+			Debug:       req.Service.Config.LogLevel,
+			Logger:      req.Service.Config.Logger,
+		}
+		req.Error = s.Sign()
+	default:
+		s := signer{
+			Request:     req.HTTPRequest,
+			Time:        req.Time,
+			ExpireTime:  req.ExpireTime,
+			Query:       req.HTTPRequest.URL.Query(),
+			Body:        req.Body,
+			ServiceName: name,
+			Region:      region,
+			Credentials: req.Service.Config.Credentials,
+			Debug:       req.Service.Config.LogLevel,
+			Logger:      req.Service.Config.Logger,
+		}
+		req.Error = s.sign()
 	}
-
-	req.Error = s.sign()
 }
 
 func (v4 *signer) sign() error {
@@ -248,7 +265,7 @@ func (v4 *signer) buildCanonicalHeaders() {
 			headerValues[i] = "host:" + v4.Request.URL.Host
 		} else {
 			headerValues[i] = k + ":" +
-				strings.Join(v4.Request.Header[http.CanonicalHeaderKey(k)], ",")
+			strings.Join(v4.Request.Header[http.CanonicalHeaderKey(k)], ",")
 		}
 	}
 

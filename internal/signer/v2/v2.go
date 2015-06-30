@@ -4,23 +4,23 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
-	"bytes"
 	"net/http"
 	"sort"
 	"strings"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
-//	"github.com/aws/aws-sdk-go/internal/protocol/rest"
 	"time"
 	"net/url"
 	"io"
+	"log"
+	"fmt"
 )
 
-//const (
-//	authHeaderPrefix = "AWS4-HMAC-SHA256"
-//	timeFormat       = "20060102T150405Z"
-//	shortTimeFormat  = "20060102"
-//)
+const (
+	authHeaderPrefix = "AWS"
+	timeFormat       = "Mon, 2 Jan 2006 15:04:05 -0700"
+	shortTimeFormat  = "20060102"
+)
 
 var ignoredHeaders = map[string]bool{
 	"Authorization":  true,
@@ -52,7 +52,7 @@ var s3ParamsToSign = map[string]bool{
 	"response-content-encoding":    true,
 }
 
-type signer struct {
+type Signer struct {
 	Request     *http.Request
 	Time        time.Time
 	ExpireTime  time.Duration
@@ -95,7 +95,7 @@ func Sign(req *aws.Request) {
 		name = req.Service.ServiceName
 	}
 
-	s := signer{
+	s := Signer{
 		Request:     req.HTTPRequest,
 		Time:        req.Time,
 		ExpireTime:  req.ExpireTime,
@@ -108,99 +108,173 @@ func Sign(req *aws.Request) {
 		Logger:      req.Service.Config.Logger,
 	}
 
-	req.Error = s.sign()
+	req.Error = s.Sign()
 }
 
-func (v2 *signer) sign() error {
-	var md5, ctype, date, xamz string
-	var xamzDate bool
-	var sarray []string
-
-	// add temporal security token
-	if v2.CredValues.SessionToken != "" {
-		v2.Request.Header.Set("x-amz-security-token", v2.CredValues.SessionToken)
+func (v2 *Signer) Sign() error {
+	if v2.ExpireTime != 0 {
+		v2.isPresign = true
 	}
 
-	if v2.credentialString ==  "" {
-		// no auth secret; skip signing, e.g. for public read-only buckets.
-		return nil
-	}
+	if false {	//v2.isRequestSigned() {
+		if !v2.Credentials.IsExpired() {
+			// If the request is already signed, and the credentials have not
+			// expired yet ignore the signing request.
+			return nil
+		}
 
-	for k, v := range v2.Request.Header {
-		k = strings.ToLower(k)
-		switch k {
-		case "content-md5":
-			md5 = v[0]
-		case "content-type":
-			ctype = v[0]
-		case "date":
-			if !xamzDate {
-				date = v[0]
-			}
-		default:
-			if strings.HasPrefix(k, "x-amz-") {
-				vall := strings.Join(v, ",")
-				sarray = append(sarray, k+":"+vall)
-				if k == "x-amz-date" {
-					xamzDate = true
-					date = ""
-				}
-			}
+		// The credentials have expired for this request. The current signing
+		// is invalid, and needs to be request because the request will fail.
+		if v2.isPresign {
+			//			v2.removePresign()
+			// Update the request's query string to ensure the values stays in
+			// sync in the case retrieving the new credentials fails.
+			v2.Request.URL.RawQuery = v2.Query.Encode()
 		}
 	}
-	if len(sarray) > 0 {
-		sort.StringSlice(sarray).Sort()
-		xamz = strings.Join(sarray, "\n") + "\n"
-	}
 
-	expires := false
-	if err := v2.Request.ParseForm(); err != nil {
+	var err error
+	v2.CredValues, err = v2.Credentials.Get()
+	if err != nil {
 		return err
 	}
-	if v := v2.Request.Form.Get("Expires"); len(v) > 0 {
-		// Query string request authentication alternative.
-		expires = true
-		date = string(v)
-		v2.Request.Form.Add("AWSAccessKeyId", v2.CredValues.AccessKeyID)
-	}
 
-	sarray = sarray[0:0]
-	for k, v := range v2.Request.Form {
-		if s3ParamsToSign[k] {
-			for _, vi := range v {
-				if vi == "" {
-					sarray = append(sarray, k)
-				} else {
-					// "When signing you do not encode these values."
-					sarray = append(sarray, k+"="+vi)
-				}
-			}
+	if v2.isPresign {
+		//		v2.Query.Set("X-Amz-Algorithm", authHeaderPrefix)
+		if v2.CredValues.SessionToken != "" {
+			v2.Query.Set("X-Amz-Security-Token", v2.CredValues.SessionToken)
+		} else {
+			v2.Query.Del("X-Amz-Security-Token")
 		}
-	}
-	if len(sarray) > 0 {
-		sort.StringSlice(sarray).Sort()
-		v2.canonicalString = v2.canonicalString + "?" + strings.Join(sarray, "&")
+	} else if v2.CredValues.SessionToken != "" {
+		v2.Request.Header.Set("X-Amz-Security-Token", v2.CredValues.SessionToken)
 	}
 
-	payload := v2.Request.Method + "\n" + md5 + "\n" + ctype + "\n" + date + "\n" + xamz + v2.canonicalString
-	hash := hmac.New(sha1.New, []byte(v2.CredValues.SecretAccessKey))
-	hash.Write([]byte(payload))
+	v2.build()
 
-	signature := make([]byte, 0)
-	b64 := base64.NewEncoder(base64.URLEncoding,bytes.NewBuffer(signature))
-	b64.Write(hash.Sum(nil))
-
-	if expires {
-		v2.Request.Form.Set("Signature", string(signature))
-	} else {
-		v2.Request.Header.Set("Authorization", "AWS " + v2.CredValues.AccessKeyID + ":" + string(signature))
+	if v2.Debug > 0 {
+		v2.logSigningInfo()
 	}
 
-	//	if debug {
-	//		log.Printf("Signature payload: %q", payload)
-	//		log.Printf("Signature: %q", signature)
-	//	}
 	return nil
 }
 
+func (v2 *Signer)build() error {
 
+	v2.buildTime()             // no depends
+	//	v2.buildCredentialString() // no depends
+	//	if v2.isPresign {
+	//		v2.buildQuery() // no depends
+	//	}
+	v2.buildCanonicalHeaders() // depends on cred string
+	v2.buildCanonicalString()  // depends on canon headers / signed headers
+	v2.buildStringToSign()     // depends on canon string
+	v2.buildSignature()        // depends on string to sign
+
+	if v2.isPresign {
+		// TODO : Check if url contains AWSAccessKeyId and Expires
+		v2.Request.URL.RawQuery += "&Signature=" + v2.signature
+	} else {
+		v2.Request.Header.Set("Authorization",
+			authHeaderPrefix + " " + v2.CredValues.AccessKeyID + ":" + v2.signature)
+	}
+
+	return nil
+}
+
+func (v2 *Signer)buildSignature() {
+	hmac := hmac.New(sha1.New, []byte(v2.CredValues.SecretAccessKey))
+	hmac.Write([]byte(v2.stringToSign))
+	v2.signature = base64.StdEncoding.EncodeToString(hmac.Sum(nil))
+}
+
+func (v2 *Signer) buildStringToSign() {
+	v2.stringToSign = strings.Join([]string{
+		v2.Request.Method,
+		v2.Request.Header.Get("Content-MD5"),
+		v2.Request.Header.Get("Content-Type"),
+		v2.Request.Header.Get("Date"),
+		v2.canonicalHeaders,
+		v2.canonicalString,
+	}, "\n")
+}
+
+func (v2 *Signer) buildCanonicalString() {
+	s := ""
+	// URI
+	if false {
+		// TODO : support virtual hosting buncket
+	} else {
+		uri := v2.Request.URL.Opaque
+		uri = strings.TrimPrefix(uri, "//")
+		s = strings.TrimPrefix(uri, v2.Request.URL.Host)
+	}
+	if s == "" {
+		s = "/"
+	}
+
+	// Sub resources
+	q := strings.Split(v2.Request.URL.RawQuery, "&")
+	sarray := []string{}
+	for _, qv := range q {
+		qp := strings.Split(qv, "=")
+		if len(qp) < 2 {
+			continue
+		}
+		log.Print(qp)
+		k, v := qp[0], qp[1]
+		if s3ParamsToSign[k] {
+			if v == "" {
+				sarray = append(sarray, k)
+			} else {
+				// "When signing you do not encode these values."
+				sarray = append(sarray, k+"="+v)
+			}
+		}
+	}
+	if len(sarray) > 0 {
+		sort.StringSlice(sarray).Sort()
+		s += "?" + strings.Join(sarray, "&")
+	}
+
+	v2.canonicalString = s
+}
+
+func (v2 *Signer) buildCanonicalHeaders() {
+	hs := map[string][]string{}
+	for k, v := range v2.Request.Header {
+		if ignoredHeaders[k] {
+			continue
+		}
+		k = strings.ToLower(k)
+		hs[k] = append(hs[k], v...)
+	}
+	sarray := []string{}
+	for k, v := range hs {
+		sarray = append(sarray, k+":" + strings.Join(v, ","))
+	}
+	if len(sarray) > 0 {
+		sort.StringSlice(sarray).Sort()
+		v2.canonicalHeaders = strings.Join(sarray, "\n")
+	}
+}
+
+func (v2 *Signer) buildTime() {
+	v2.formattedTime = v2.Time.UTC().Format(timeFormat)
+	if v2.Request.Header.Get("Date") == "" {
+		v2.Request.Header.Set("x-amz-date", v2.formattedTime)
+	}
+}
+
+func (v2 *Signer) logSigningInfo() {
+	out := v2.Logger
+	fmt.Fprintf(out, "---[ CANONICAL STRING  ]-----------------------------\n")
+	fmt.Fprintln(out, v2.canonicalString)
+	fmt.Fprintf(out, "---[ STRING TO SIGN ]--------------------------------\n")
+	fmt.Fprintln(out, v2.stringToSign)
+	if v2.isPresign {
+		fmt.Fprintf(out, "---[ SIGNED URL ]--------------------------------\n")
+		fmt.Fprintln(out, v2.Request.URL)
+	}
+	fmt.Fprintf(out, "-----------------------------------------------------\n")
+}
