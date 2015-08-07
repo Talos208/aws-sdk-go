@@ -22,13 +22,6 @@ const (
 	shortTimeFormat  = "20060102"
 )
 
-var ignoredHeaders = map[string]bool{
-	"Authorization":  true,
-	"Content-Type":   true,
-	"Content-Length": true,
-	"User-Agent":     true,
-}
-
 var s3ParamsToSign = map[string]bool{
 	"acl":                          true,
 	"delete":                       true,
@@ -243,10 +236,10 @@ func (v2 *Signer) buildCanonicalString() {
 func (v2 *Signer) buildCanonicalHeaders() {
 	hs := map[string][]string{}
 	for k, v := range v2.Request.Header {
-		if ignoredHeaders[k] {
+		k = strings.ToLower(k)
+		if !strings.HasPrefix(k,"x-amz-") {
 			continue
 		}
-		k = strings.ToLower(k)
 		hs[k] = append(hs[k], v...)
 	}
 	sarray := []string{}
